@@ -1,3 +1,12 @@
+"""
+app/services/sap_service.py - Updated version
+
+Key changes:
+1. fetch_data now accepts primary_key parameter
+2. Always includes primary_key in select fields
+3. More flexible attribute handling
+"""
+
 import requests
 import xml.etree.ElementTree as ET
 import pandas as pd
@@ -13,7 +22,7 @@ class SAPService:
     
     # List of common SAP IBP attributes that can be used for segmentation
     AVAILABLE_ATTRIBUTES = [
-        'PRDID',        # Product ID (required)
+        'PRDID',        # Product ID
         'LOCID',        # Location ID
         'CUSTID',       # Customer ID
         'PRDGRPID',     # Product Group ID
@@ -21,6 +30,18 @@ class SAPService:
         'SALESORGID',   # Sales Organization ID
         'CHANID',       # Channel ID
         'DIVID',        # Division ID
+    ]
+    
+    # Attributes that can be used as primary keys for segmentation
+    PRIMARY_KEY_ATTRIBUTES = [
+        'PRDID',
+        'LOCID',
+        'CUSTID',
+        'PRDGRPID',
+        'REGIONID',
+        'SALESORGID',
+        'CHANID',
+        'DIVID'
     ]
     
     def __init__(self):
@@ -37,23 +58,32 @@ class SAPService:
     
     def fetch_data(
         self, 
+        primary_key: str = 'PRDID',
         additional_filters: Optional[str] = None,
         additional_attributes: Optional[List[str]] = None
     ) -> pd.DataFrame:
         """
-        Fetch product data from SAP IBP OData API
+        Fetch data from SAP IBP OData API with flexible primary key
         
         Args:
+            primary_key: Primary key for segmentation (PRDID, LOCID, CUSTID, etc.)
             additional_filters: Optional OData filter string
-            additional_attributes: List of additional attributes to fetch (e.g., ['LOCID', 'CUSTID'])
+            additional_attributes: List of additional attributes to fetch
             
         Returns:
-            DataFrame with product data
+            DataFrame with data grouped by primary_key
         """
-        logger.info("Fetching data from SAP IBP API")
+        logger.info(f"Fetching data from SAP IBP API with primary_key={primary_key}")
+        
+        # Validate primary key
+        if primary_key not in self.PRIMARY_KEY_ATTRIBUTES:
+            raise ValueError(
+                f"Invalid primary_key: {primary_key}. "
+                f"Must be one of: {self.PRIMARY_KEY_ATTRIBUTES}"
+            )
         
         # Base select fields (always needed)
-        select_fields = ['PRDID', 'ACTUALSQTY', 'PERIODID3_TSTAMP']
+        select_fields = [primary_key, 'ACTUALSQTY', 'PERIODID3_TSTAMP']
         
         # Add additional attributes if requested
         if additional_attributes:
@@ -93,6 +123,11 @@ class SAPService:
         try:
             df = self._parse_xml_response(response.content, select_fields)
             logger.info(f"Successfully parsed {len(df)} records with columns: {list(df.columns)}")
+            
+            # Validate that primary key exists in data
+            if primary_key not in df.columns:
+                raise Exception(f"Primary key {primary_key} not found in response data")
+            
             return df
             
         except ET.ParseError as e:
@@ -133,3 +168,8 @@ class SAPService:
     def get_available_attributes(cls) -> List[str]:
         """Get list of available attributes for segmentation"""
         return cls.AVAILABLE_ATTRIBUTES
+    
+    @classmethod
+    def get_primary_key_attributes(cls) -> List[str]:
+        """Get list of attributes that can be used as primary keys"""
+        return cls.PRIMARY_KEY_ATTRIBUTES

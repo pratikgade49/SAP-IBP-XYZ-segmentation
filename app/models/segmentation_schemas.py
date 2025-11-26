@@ -1,7 +1,10 @@
 """
-app/models/segmentation_schemas.py
+app/models/segmentation_schemas.py - Updated version
 
-Pydantic schemas for dynamic XYZ segmentation configuration
+Key changes:
+1. Removed PRDID requirement
+2. Added primary_key field to specify segmentation key
+3. Made groupby_attributes more flexible
 """
 
 from pydantic import BaseModel, Field, validator
@@ -9,61 +12,20 @@ from typing import List, Optional, Dict, Any
 from enum import Enum
 
 
-class SegmentationAttribute(str, Enum):
-    """Available attributes for segmentation"""
-    PRODUCT = "PRDID"
-    LOCATION = "LOCID"
-    CUSTOMER = "CUSTID"
-    PRODUCT_GROUP = "PRDGRPID"
-    REGION = "REGIONID"
-    SALES_ORG = "SALESORGID"
-    # Add more as needed based on your SAP IBP data model
-
-
 class AggregationMethod(str, Enum):
     """Methods for handling multiple periods"""
-    MEAN_STD = "mean_std"  # Standard CV calculation
-    WEIGHTED_MEAN = "weighted_mean"  # Weight recent periods more
-    ROLLING_WINDOW = "rolling_window"  # Use moving window
-
-
-class AttributeInfo(BaseModel):
-    """Information about a single attribute"""
-    field: str
-    name: str
-    description: str
-    required: bool
-    unique_values: int
-
-
-class RecommendedCombination(BaseModel):
-    """Recommended attribute combination"""
-    level: str
-    attributes: List[str]
-    description: str
-    estimated_segments: int
-    use_case: str
-
-
-class AvailableAttributesResponse(BaseModel):
-    """Response listing available attributes for segmentation"""
-    available_attributes: List[AttributeInfo] = Field(
-        ...,
-        description="List of attributes with descriptions"
-    )
-    current_data_attributes: List[str] = Field(
-        ...,
-        description="Attributes currently present in the data"
-    )
-    recommended_combinations: List[RecommendedCombination] = Field(
-        ...,
-        description="Suggested attribute combinations"
-    )
-    timestamp: str
+    MEAN_STD = "mean_std"
+    WEIGHTED_MEAN = "weighted_mean"
+    ROLLING_WINDOW = "rolling_window"
 
 
 class SegmentationConfig(BaseModel):
     """Configuration for dynamic segmentation"""
+    
+    primary_key: str = Field(
+        "PRDID",
+        description="Primary key for segmentation (PRDID, LOCID, CUSTID, etc.)"
+    )
     
     groupby_attributes: List[str] = Field(
         ...,
@@ -113,6 +75,14 @@ class SegmentationConfig(BaseModel):
         description="Additional OData filters"
     )
     
+    @validator('primary_key')
+    def validate_primary_key(cls, v):
+        """Ensure primary key is a valid attribute"""
+        valid_keys = ['PRDID', 'LOCID', 'CUSTID', 'PRDGRPID', 'REGIONID', 'SALESORGID', 'CHANID', 'DIVID']
+        if v not in valid_keys:
+            raise ValueError(f'primary_key must be one of: {valid_keys}')
+        return v
+    
     @validator('y_threshold')
     def validate_thresholds(cls, v, values):
         """Ensure Y threshold is greater than X threshold"""
@@ -121,23 +91,49 @@ class SegmentationConfig(BaseModel):
         return v
     
     @validator('groupby_attributes')
-    def validate_attributes(cls, v):
-        """Validate that at least PRDID is included"""
-        if 'PRDID' not in v:
-            raise ValueError('PRDID must be included in groupby_attributes')
+    def validate_attributes(cls, v, values):
+        """Validate that primary_key is included in groupby_attributes"""
+        # Get primary_key from values - it should already be validated
+        primary_key = values.get('primary_key', 'PRDID')
+        
+        if primary_key not in v:
+            raise ValueError(f'{primary_key} must be included in groupby_attributes')
         return v
     
     class Config:
         json_schema_extra = {
-            "example": {
-                "groupby_attributes": ["PRDID", "LOCID"],
-                "x_threshold": 10.0,
-                "y_threshold": 25.0,
-                "min_periods": 12,
-                "aggregation_method": "mean_std",
-                "remove_outliers": True,
-                "outlier_threshold": 3.0
-            }
+            "examples": [
+                {
+                    "name": "Product-based segmentation",
+                    "value": {
+                        "primary_key": "PRDID",
+                        "groupby_attributes": ["PRDID", "LOCID"],
+                        "x_threshold": 10.0,
+                        "y_threshold": 25.0,
+                        "min_periods": 12
+                    }
+                },
+                {
+                    "name": "Location-based segmentation",
+                    "value": {
+                        "primary_key": "LOCID",
+                        "groupby_attributes": ["LOCID"],
+                        "x_threshold": 10.0,
+                        "y_threshold": 25.0,
+                        "min_periods": 12
+                    }
+                },
+                {
+                    "name": "Customer-based segmentation",
+                    "value": {
+                        "primary_key": "CUSTID",
+                        "groupby_attributes": ["CUSTID", "PRDID"],
+                        "x_threshold": 10.0,
+                        "y_threshold": 25.0,
+                        "min_periods": 12
+                    }
+                }
+            ]
         }
 
 
@@ -146,13 +142,14 @@ class AttributeInfo(BaseModel):
     field: str
     name: str
     description: str
-    required: bool
+    can_be_primary: bool  # NEW: indicates if can be used as primary key
     unique_values: int
 
 
 class RecommendedCombination(BaseModel):
     """Recommended attribute combination"""
     level: str
+    primary_key: str  # NEW: primary key for this combination
     attributes: List[str]
     description: str
     estimated_segments: int
@@ -161,36 +158,18 @@ class RecommendedCombination(BaseModel):
 
 class AvailableAttributesResponse(BaseModel):
     """Response listing available attributes for segmentation"""
-    available_attributes: List[AttributeInfo] = Field(
-        ...,
-        description="List of attributes with descriptions"
-    )
-    current_data_attributes: List[str] = Field(
-        ...,
-        description="Attributes currently present in the data"
-    )
-    recommended_combinations: List[RecommendedCombination] = Field(
-        ...,
-        description="Suggested attribute combinations"
-    )
+    available_attributes: List[AttributeInfo]
+    current_data_attributes: List[str]
+    recommended_combinations: List[RecommendedCombination]
     timestamp: str
 
 
 class SegmentationPreviewResponse(BaseModel):
     """Preview of segmentation configuration"""
     config: SegmentationConfig
-    estimated_segments: int = Field(
-        ...,
-        description="Estimated number of unique segments"
-    )
-    data_coverage: Dict[str, Any] = Field(
-        ...,
-        description="Data quality metrics"
-    )
-    warnings: List[str] = Field(
-        default_factory=list,
-        description="Configuration warnings"
-    )
+    estimated_segments: int
+    data_coverage: Dict[str, Any]
+    warnings: List[str] = Field(default_factory=list)
     timestamp: str
 
 
@@ -198,30 +177,10 @@ class DynamicXYZAnalysisResponse(BaseModel):
     """Response for dynamic XYZ analysis"""
     total_records: int
     unique_segments: int
+    primary_key: str  # NEW: indicates which key was used
     segmentation_level: List[str]
     segment_distribution: Dict[str, int]
     analysis_params: Dict[str, Any]
     data: List[Dict[str, Any]]
     data_quality: Dict[str, Any]
     timestamp: str
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "total_records": 1500,
-                "unique_segments": 450,
-                "segmentation_level": ["PRDID", "LOCID"],
-                "segment_distribution": {"X": 150, "Y": 180, "Z": 120},
-                "analysis_params": {
-                    "x_threshold": 10.0,
-                    "y_threshold": 25.0,
-                    "min_periods": 12
-                },
-                "data_quality": {
-                    "records_with_sufficient_history": 450,
-                    "records_excluded": 0,
-                    "avg_periods_per_segment": 24
-                },
-                "timestamp": "2024-01-15T10:30:00"
-            }
-        }

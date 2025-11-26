@@ -1,13 +1,16 @@
 """
-app/api/routes/dynamic_segmentation.py
+app/api/routes/dynamic_segmentation.py - Updated version
 
-Simplified API routes for dynamic XYZ segmentation
+Key changes:
+1. Uses primary_key from config
+2. Passes primary_key to SAP service
+3. More flexible attribute handling
 """
 
 from fastapi import APIRouter, Depends, Query, HTTPException, Body
 from fastapi.responses import StreamingResponse
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 import pandas as pd
 import io
 
@@ -16,13 +19,11 @@ from app.models.segmentation_schemas import (
     AvailableAttributesResponse,
     SegmentationPreviewResponse,
     DynamicXYZAnalysisResponse,
-    AttributeInfo,
-    RecommendedCombination
+    AttributeInfo
 )
 from app.services.sap_service import SAPService
 from app.services.dynamic_analysis_service import DynamicAnalysisService
 from app.api.dependencies import get_sap_service
-from app.config import get_settings
 from app.utils.logger import get_logger
 
 router = APIRouter(prefix="/api/v1/dynamic-segmentation", tags=["Dynamic Segmentation"])
@@ -34,14 +35,20 @@ async def get_available_attributes_list():
     """
     Get list of all attributes that can be used for segmentation
     
-    Simply returns the predefined list of SAP IBP attributes.
-    Use these in your segmentation configuration.
+    **Primary Key Options:**
+    Any attribute can be used as the primary key for segmentation:
+    - PRDID (Product)
+    - LOCID (Location)
+    - CUSTID (Customer)
+    - PRDGRPID (Product Group)
+    - And more...
     """
     attributes = SAPService.get_available_attributes()
+    primary_keys = SAPService.get_primary_key_attributes()
     
     # Build detailed info
     attribute_info = {
-        'PRDID': 'Product ID - Individual product identifier (REQUIRED)',
+        'PRDID': 'Product ID - Individual product identifier',
         'LOCID': 'Location ID - Warehouse/distribution center',
         'CUSTID': 'Customer ID - Customer identifier',
         'PRDGRPID': 'Product Group ID - Product category/family',
@@ -54,76 +61,41 @@ async def get_available_attributes_list():
     detailed = [
         {
             'attribute': attr,
-            'description': attribute_info.get(attr, 'Additional attribute')
+            'description': attribute_info.get(attr, 'Additional attribute'),
+            'can_be_primary_key': attr in primary_keys
         }
         for attr in attributes
     ]
     
     return {
         "available_attributes": attributes,
+        "primary_key_options": primary_keys,
         "detailed_info": detailed,
-        "usage_example": {
-            "product_only": ["PRDID"],
-            "product_location": ["PRDID", "LOCID"],
-            "product_location_customer": ["PRDID", "LOCID", "CUSTID"]
+        "usage_examples": {
+            "product_only": {
+                "primary_key": "PRDID",
+                "groupby_attributes": ["PRDID"]
+            },
+            "location_only": {
+                "primary_key": "LOCID",
+                "groupby_attributes": ["LOCID"]
+            },
+            "customer_only": {
+                "primary_key": "CUSTID",
+                "groupby_attributes": ["CUSTID"]
+            },
+            "product_location": {
+                "primary_key": "PRDID",
+                "groupby_attributes": ["PRDID", "LOCID"]
+            },
+            "location_customer": {
+                "primary_key": "LOCID",
+                "groupby_attributes": ["LOCID", "CUSTID"]
+            }
         },
-        "note": "PRDID is required and always included",
+        "note": "Specify primary_key to determine the main segmentation dimension",
         "timestamp": datetime.utcnow().isoformat()
     }
-
-
-@router.get("/attributes", response_model=AvailableAttributesResponse)
-async def get_attributes_with_data(
-    attributes: str = Query("PRDID", description="Comma-separated attributes (e.g., 'PRDID,LOCID,CUSTID')"),
-    filters: Optional[str] = Query(None, description="OData filters"),
-    sap_service: SAPService = Depends(get_sap_service)
-):
-    """
-    Fetch data with specified attributes and show what's available
-    
-    **Parameters:**
-    - `attributes`: Comma-separated list (e.g., "PRDID,LOCID,CUSTID")
-    - `filters`: Optional OData filters
-    
-    **Example:**
-    `/attributes?attributes=PRDID,LOCID,CUSTID`
-    """
-    logger.info(f"Fetching data with attributes: {attributes}")
-    
-    try:
-        # Parse attributes
-        attr_list = [a.strip() for a in attributes.split(',')]
-        
-        # PRDID is always required
-        if 'PRDID' not in attr_list:
-            attr_list.insert(0, 'PRDID')
-        
-        # Fetch data
-        additional_attrs = [a for a in attr_list if a != 'PRDID']
-        df = sap_service.fetch_data(
-            additional_filters=filters,
-            additional_attributes=additional_attrs
-        )
-        
-        if df.empty:
-            raise HTTPException(status_code=404, detail="No data found")
-        
-        # Get available attributes from the data
-        analysis_service = DynamicAnalysisService()
-        attributes_info = analysis_service.get_available_attributes(df)
-        
-        logger.info(f"Found {len(attributes_info['available_attributes'])} attributes in data")
-        
-        return AvailableAttributesResponse(
-            available_attributes=attributes_info['available_attributes'],
-            current_data_attributes=attributes_info['current_data_attributes'],
-            recommended_combinations=attributes_info['recommended_combinations'],
-            timestamp=datetime.utcnow().isoformat()
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to get attributes: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/preview", response_model=SegmentationPreviewResponse)
@@ -134,24 +106,37 @@ async def preview_segmentation(
     """
     Preview segmentation configuration before running full analysis
     
-    **Example Request:**
+    **Example Request (Product-based):**
     ```json
     {
+        "primary_key": "PRDID",
         "groupby_attributes": ["PRDID", "LOCID"],
         "x_threshold": 10.0,
         "y_threshold": 25.0,
         "min_periods": 12
     }
     ```
+    
+    **Example Request (Location-based):**
+    ```json
+    {
+        "primary_key": "LOCID",
+        "groupby_attributes": ["LOCID"],
+        "x_threshold": 10.0,
+        "y_threshold": 25.0,
+        "min_periods": 12
+    }
+    ```
     """
-    logger.info(f"Previewing segmentation: {config.groupby_attributes}")
+    logger.info(f"Previewing segmentation: primary_key={config.primary_key}, attributes={config.groupby_attributes}")
     
     try:
-        # Determine additional attributes to fetch
-        additional_attrs = [a for a in config.groupby_attributes if a != 'PRDID']
+        # Determine additional attributes to fetch (exclude primary key)
+        additional_attrs = [a for a in config.groupby_attributes if a != config.primary_key]
         
-        # Fetch data
+        # Fetch data with specified primary key
         df = sap_service.fetch_data(
+            primary_key=config.primary_key,
             additional_filters=config.filters,
             additional_attributes=additional_attrs
         )
@@ -189,27 +174,50 @@ async def analyze_dynamic_segmentation(
     sap_service: SAPService = Depends(get_sap_service)
 ):
     """
-    Perform dynamic XYZ segmentation analysis
+    Perform dynamic XYZ segmentation analysis with any primary key
     
-    **Example Request:**
+    **Example 1 - Product Segmentation:**
     ```json
     {
-        "groupby_attributes": ["PRDID", "LOCID"],
+        "primary_key": "PRDID",
+        "groupby_attributes": ["PRDID"],
         "x_threshold": 10.0,
         "y_threshold": 25.0,
-        "min_periods": 12,
-        "remove_outliers": true
+        "min_periods": 12
+    }
+    ```
+    
+    **Example 2 - Location Segmentation:**
+    ```json
+    {
+        "primary_key": "LOCID",
+        "groupby_attributes": ["LOCID"],
+        "x_threshold": 10.0,
+        "y_threshold": 25.0,
+        "min_periods": 12
+    }
+    ```
+    
+    **Example 3 - Customer Segmentation:**
+    ```json
+    {
+        "primary_key": "CUSTID",
+        "groupby_attributes": ["CUSTID", "PRDID"],
+        "x_threshold": 10.0,
+        "y_threshold": 25.0,
+        "min_periods": 12
     }
     ```
     """
-    logger.info(f"Starting dynamic analysis: {config.groupby_attributes}")
+    logger.info(f"Starting analysis: primary_key={config.primary_key}, attributes={config.groupby_attributes}")
     
     try:
         # Determine additional attributes to fetch
-        additional_attrs = [a for a in config.groupby_attributes if a != 'PRDID']
+        additional_attrs = [a for a in config.groupby_attributes if a != config.primary_key]
         
-        # Fetch data from SAP
+        # Fetch data from SAP with specified primary key
         df = sap_service.fetch_data(
+            primary_key=config.primary_key,
             additional_filters=config.filters,
             additional_attributes=additional_attrs
         )
@@ -237,15 +245,17 @@ async def analyze_dynamic_segmentation(
         
         logger.info(
             f"Analysis complete: {len(result_df)} unique segments, "
-            f"distribution: {segment_distribution}"
+            f"primary_key={config.primary_key}, distribution: {segment_distribution}"
         )
         
         return DynamicXYZAnalysisResponse(
             total_records=data_quality['total_records_analyzed'],
             unique_segments=data_quality['unique_segments'],
+            primary_key=config.primary_key,
             segmentation_level=config.groupby_attributes,
             segment_distribution=segment_distribution,
             analysis_params={
+                "primary_key": config.primary_key,
                 "x_threshold": config.x_threshold,
                 "y_threshold": config.y_threshold,
                 "min_periods": config.min_periods,
@@ -272,14 +282,15 @@ async def export_dynamic_analysis(
     sap_service: SAPService = Depends(get_sap_service)
 ):
     """Export dynamic XYZ analysis results"""
-    logger.info(f"Export requested: format={format}, level={config.groupby_attributes}")
+    logger.info(f"Export requested: format={format}, primary_key={config.primary_key}")
     
     try:
         # Determine additional attributes to fetch
-        additional_attrs = [a for a in config.groupby_attributes if a != 'PRDID']
+        additional_attrs = [a for a in config.groupby_attributes if a != config.primary_key]
         
         # Fetch and analyze data
         df = sap_service.fetch_data(
+            primary_key=config.primary_key,
             additional_filters=config.filters,
             additional_attributes=additional_attrs
         )
@@ -294,12 +305,13 @@ async def export_dynamic_analysis(
             raise HTTPException(status_code=422, detail="No segments produced")
         
         # Add metadata
+        result_df['primary_key'] = config.primary_key
         result_df['segmentation_level'] = '_'.join(config.groupby_attributes)
         result_df['analysis_date'] = datetime.utcnow().isoformat()
         
         # Generate file
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        level_str = '_'.join(config.groupby_attributes).lower()
+        level_str = f"{config.primary_key}_{'_'.join(config.groupby_attributes)}".lower()
         
         if format == "csv":
             output = io.StringIO()

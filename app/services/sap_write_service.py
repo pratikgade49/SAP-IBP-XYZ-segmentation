@@ -1,8 +1,7 @@
 """
-app/services/sap_write_service.py
+app/services/sap_write_service.py - Complete version with all write modes
 
-Service for writing XYZ segmentation results back to SAP IBP
-using the /IBP/PLANNING_DATA_API_SRV OData service
+This is the COMPLETE file - replace your existing sap_write_service.py with this
 """
 
 import requests
@@ -10,6 +9,7 @@ import pandas as pd
 from typing import Optional, Dict, List, Any
 from datetime import datetime
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.config import get_settings
 from app.utils.logger import get_logger
 
@@ -21,7 +21,6 @@ class SAPWriteService:
     
     def __init__(self):
         self.settings = get_settings()
-        # Remove trailing slash from API URL if present
         self.api_url = self.settings.SAP_WRITE_API_URL.rstrip('/')
         self.username = self.settings.SAP_USERNAME
         self.password = self.settings.SAP_PASSWORD
@@ -29,29 +28,18 @@ class SAPWriteService:
         self.planning_area = self.settings.SAP_PLANNING_AREA
         self.xyz_key_figure = self.settings.SAP_XYZ_KEY_FIGURE
         self.enable_null_handling = self.settings.SAP_ENABLE_NULL_HANDLING
-        self.session = None
-        self.csrf_token = None
-
         
         logger.info(f"Initialized write service with URL: {self.api_url}")
         logger.info(f"Planning area: {self.planning_area}")
         logger.info(f"Key figure: {self.xyz_key_figure}")
-        logger.info(f"NULL handling enabled: {self.enable_null_handling}")
     
     def _get_csrf_token(self) -> tuple[requests.Session, str]:
-        """
-        Fetch CSRF token required for POST operations
-        
-        Returns:
-            Tuple of (session, csrf_token)
-        """
+        """Fetch CSRF token required for POST operations"""
         logger.debug("Fetching CSRF token from SAP")
         
-        # Create session to maintain cookies
         session = requests.Session()
         session.auth = (self.username, self.password)
         
-        # Fetch CSRF token with HEAD or GET request
         try:
             response = session.get(
                 self.api_url,
@@ -74,86 +62,99 @@ class SAPWriteService:
         except Exception as e:
             logger.error(f"Failed to get CSRF token: {str(e)}")
             raise Exception(f"Failed to obtain CSRF token: {str(e)}")
-        
+    
     def _generate_transaction_id(self) -> str:
-        """Generate a unique transaction ID (max 32 chars)"""
+        """Generate a unique transaction ID"""
         return uuid.uuid4().hex.upper()[:32]
     
     def _prepare_payload(
         self,
         segment_data: pd.DataFrame,
         transaction_id: str,
+        primary_key: str = "PRDID",
         version_id: Optional[str] = None,
         scenario_id: Optional[str] = None,
         period_field: str = "PERIODID3_TSTAMP",
         do_commit: bool = False
     ) -> Dict[str, Any]:
         """
-        Prepare POST payload for SAP IBP
+        Prepare POST payload for SAP IBP with flexible primary key
         
         Args:
-            segment_data: DataFrame with PRDID, XYZ_Segment, and optional period columns
+            segment_data: DataFrame with primary_key, XYZ_Segment columns
             transaction_id: Unique transaction identifier
-            version_id: Target version (None = base version)
-            scenario_id: Target scenario (None = baseline)
-            period_field: Period field name (e.g., PERIODID3_TSTAMP, PERIODID4_TSTAMP)
+            primary_key: Primary key field (PRDID, LOCID, CUSTID, etc.)
+            version_id: Target version
+            scenario_id: Target scenario
+            period_field: Period field name
             do_commit: If True, auto-commit in single request
             
         Returns:
             Dictionary payload for POST request
         """
-        logger.debug(f"Preparing payload for {len(segment_data)} records")
+        logger.debug(f"Preparing payload for {len(segment_data)} records with primary_key={primary_key}")
+        
+        # Validate that primary_key exists in data
+        if primary_key not in segment_data.columns:
+            raise ValueError(f"Primary key {primary_key} not found in segment_data")
         
         # Build aggregation level fields string
-        # Format: PRDID,XYZ_SEGMENT,PERIODID_TSTAMP
-        # Or with NULL handling: PRDID,XYZ_SEGMENT,XYZ_SEGMENT_isNull,PERIODID_TSTAMP
+        # Start with primary key, then add XYZ key figure
+        agg_fields_list = [primary_key, self.xyz_key_figure]
         
+        # Add NULL handling if enabled
         if self.enable_null_handling:
-            agg_fields = f"PRDID,{self.xyz_key_figure},{self.xyz_key_figure}_isNull,{period_field}"
-        else:
-            agg_fields = f"PRDID,{self.xyz_key_figure},{period_field}"
+            agg_fields_list.append(f"{self.xyz_key_figure}_isNull")
         
-        # Add location if present
-        if 'LOCID' in segment_data.columns:
-            agg_fields = f"LOCID,{agg_fields}"
+        # Add additional dimensions if present in data
+        additional_dims = []
+        for dim in ['LOCID', 'CUSTID', 'PRDGRPID']:
+            if dim in segment_data.columns and dim != primary_key:
+                additional_dims.append(dim)
+        
+        # Build final field list: additional_dims, primary_key, xyz_field, period
+        final_fields = additional_dims + [primary_key, self.xyz_key_figure]
+        if self.enable_null_handling:
+            final_fields.append(f"{self.xyz_key_figure}_isNull")
+        final_fields.append(period_field)
+        
+        agg_fields = ','.join(final_fields)
         
         # Build navigation property data
         nav_data = []
         for _, row in segment_data.iterrows():
             record = {
-                "PRDID": row['PRDID'],
+                primary_key: row[primary_key],
                 self.xyz_key_figure: row['XYZ_Segment']
             }
             
-            # Add NULL flag only if enabled
+            # Add NULL flag if enabled
             if self.enable_null_handling:
                 record[f"{self.xyz_key_figure}_isNull"] = False
             
-            # Add location if present
-            if 'LOCID' in row and pd.notna(row['LOCID']):
-                record['LOCID'] = row['LOCID']
+            # Add additional dimensions
+            for dim in additional_dims:
+                if pd.notna(row[dim]):
+                    record[dim] = row[dim]
             
             # Add period timestamp
             if period_field in row and pd.notna(row[period_field]):
                 record[period_field] = row[period_field]
             else:
-                # Use current timestamp if not provided
                 record[period_field] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
             
             nav_data.append(record)
         
-        # Navigation property name is based on planning area
-        # Format: Nav<PlanningArea> (e.g., NavSAP1, NavYSAPIBP1)
+        # Navigation property name
         nav_property_name = f"Nav{self.planning_area}"
         
         # Build main payload
         payload = {
             "Transactionid": transaction_id,
             "AggregationLevelFieldsString": agg_fields,
-            nav_property_name: nav_data  # Dynamic navigation property name
+            nav_property_name: nav_data
         }
         
-        # Add optional fields
         if version_id:
             payload["VersionID"] = version_id
         
@@ -163,30 +164,29 @@ class SAPWriteService:
         if do_commit:
             payload["DoCommit"] = True
         
-        logger.debug(f"Payload prepared with {len(nav_data)} records using {nav_property_name}")
+        logger.debug(f"Payload prepared with primary_key={primary_key}, {len(nav_data)} records")
         return payload
     
     def write_segments_simple(
         self,
         segment_data: pd.DataFrame,
+        primary_key: str = "PRDID",
         version_id: Optional[str] = None,
         scenario_id: Optional[str] = None,
         period_field: str = "PERIODID3_TSTAMP"
     ) -> Dict[str, Any]:
         """
-        Write XYZ segments using simple single-request method (for ≤5000 records)
+        Write XYZ segments using simple single-request method
         
         Args:
-            segment_data: DataFrame with PRDID and XYZ_Segment columns
+            segment_data: DataFrame with primary_key and XYZ_Segment columns
+            primary_key: Primary key field (PRDID, LOCID, CUSTID, etc.)
             version_id: Target version
             scenario_id: Target scenario
             period_field: Period timestamp field name
-            
-        Returns:
-            Response with transaction ID and status
         """
         record_count = len(segment_data)
-        logger.info(f"Starting simple write for {record_count} segments")
+        logger.info(f"Starting simple write for {record_count} segments with primary_key={primary_key}")
         
         if record_count > 5000:
             logger.warning(f"Record count {record_count} exceeds recommended limit of 5000")
@@ -195,10 +195,11 @@ class SAPWriteService:
         transaction_id = self._generate_transaction_id()
         logger.info(f"Generated transaction ID: {transaction_id}")
         
-        # Prepare payload with DoCommit=True
+        # Prepare payload
         payload = self._prepare_payload(
             segment_data=segment_data,
             transaction_id=transaction_id,
+            primary_key=primary_key,
             version_id=version_id,
             scenario_id=scenario_id,
             period_field=period_field,
@@ -229,13 +230,10 @@ class SAPWriteService:
                 "status": "success",
                 "transaction_id": transaction_id,
                 "records_sent": record_count,
+                "primary_key": primary_key,
                 "message": "Data written and committed successfully"
             }
             
-        except requests.exceptions.Timeout:
-            logger.error("Write request timeout")
-            raise Exception("SAP write request timeout")
-        
         except requests.exceptions.RequestException as e:
             logger.error(f"Write request failed: {str(e)}")
             if hasattr(e, 'response') and hasattr(e.response, 'text'):
@@ -243,12 +241,12 @@ class SAPWriteService:
             raise Exception(f"Failed to write data to SAP: {str(e)}")
         
         finally:
-            # Close session
             session.close()
     
     def write_segments_batched(
         self,
         segment_data: pd.DataFrame,
+        primary_key: str = "PRDID",
         version_id: Optional[str] = None,
         scenario_id: Optional[str] = None,
         period_field: str = "PERIODID3_TSTAMP",
@@ -258,7 +256,8 @@ class SAPWriteService:
         Write XYZ segments using multi-batch method with explicit commit
         
         Args:
-            segment_data: DataFrame with PRDID and XYZ_Segment columns
+            segment_data: DataFrame with primary_key and XYZ_Segment columns
+            primary_key: Primary key field
             version_id: Target version
             scenario_id: Target scenario
             period_field: Period timestamp field name
@@ -268,15 +267,15 @@ class SAPWriteService:
             Response with transaction ID, batch info, and status
         """
         record_count = len(segment_data)
-        logger.info(f"Starting batched write for {record_count} segments")
+        logger.info(f"Starting batched write for {record_count} segments with primary_key={primary_key}")
         
         # Get CSRF token and session
         session, csrf_token = self._get_csrf_token()
         
         try:
-            # Get transaction ID from system
-            transaction_id = self._get_transaction_id(session, csrf_token)
-            logger.info(f"Retrieved transaction ID: {transaction_id}")
+            # Generate transaction ID locally (similar to simple mode)
+            transaction_id = self._generate_transaction_id()
+            logger.info(f"Generated transaction ID: {transaction_id}")
             
             # Split data into batches
             batches = [segment_data[i:i+batch_size] for i in range(0, record_count, batch_size)]
@@ -292,6 +291,7 @@ class SAPWriteService:
                 payload = self._prepare_payload(
                     segment_data=batch,
                     transaction_id=transaction_id,
+                    primary_key=primary_key,
                     version_id=version_id,
                     scenario_id=scenario_id,
                     period_field=period_field,
@@ -328,6 +328,7 @@ class SAPWriteService:
                 "records_sent": record_count,
                 "batch_count": batch_count,
                 "batch_size": batch_size,
+                "primary_key": primary_key,
                 "commit_status": commit_result,
                 "export_result": export_result,
                 "message": "Data written and committed in batches"
@@ -337,29 +338,135 @@ class SAPWriteService:
             # Close session
             session.close()
     
+    def write_segments_parallel(
+        self,
+        segment_data: pd.DataFrame,
+        primary_key: str = "PRDID",
+        version_id: Optional[str] = None,
+        scenario_id: Optional[str] = None,
+        period_field: str = "PERIODID3_TSTAMP",
+        batch_size: int = 5000,
+        max_workers: int = 4
+    ) -> Dict[str, Any]:
+        """
+        Write XYZ segments using parallel processing for high volumes
+        
+        Args:
+            segment_data: DataFrame with primary_key and XYZ_Segment columns
+            primary_key: Primary key field
+            version_id: Target version
+            scenario_id: Target scenario
+            period_field: Period timestamp field name
+            batch_size: Number of records per batch
+            max_workers: Maximum parallel threads
+            
+        Returns:
+            Response with transaction ID and status
+        """
+        record_count = len(segment_data)
+        logger.info(f"Starting parallel write for {record_count} segments with primary_key={primary_key}")
+        
+        # Get CSRF token and session
+        session, csrf_token = self._get_csrf_token()
+        
+        try:
+            # Initiate parallel process
+            transaction_id = self._initiate_parallel_process(
+                session=session,
+                csrf_token=csrf_token,
+                version_id=version_id,
+                scenario_id=scenario_id
+            )
+            
+            # Split data into batches
+            batches = [segment_data[i:i+batch_size] for i in range(0, record_count, batch_size)]
+            batch_count = len(batches)
+            logger.info(f"Split into {batch_count} batches for parallel processing")
+            
+            url = f"{self.api_url}/{self.planning_area}Trans"
+            
+            # Send batches in parallel
+            results = []
+            failed_batches = []
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_batch = {
+                    executor.submit(
+                        self._send_batch_parallel,
+                        url,
+                        batch,
+                        transaction_id,
+                        csrf_token,
+                        primary_key,
+                        period_field,
+                        idx
+                    ): idx for idx, batch in enumerate(batches, 1)
+                }
+                
+                for future in as_completed(future_to_batch):
+                    batch_idx = future_to_batch[future]
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        logger.info(f"Batch {batch_idx} completed successfully")
+                    except Exception as e:
+                        logger.error(f"Batch {batch_idx} failed: {str(e)}")
+                        failed_batches.append(batch_idx)
+            
+            if failed_batches:
+                logger.error(f"Failed batches: {failed_batches}")
+                raise Exception(f"Some batches failed: {failed_batches}")
+            
+            # Commit transaction
+            logger.info("All batches sent, committing transaction")
+            commit_result = self._commit_transaction(session, csrf_token, transaction_id)
+            
+            # Get export result
+            export_result = self._get_export_result(session, csrf_token, transaction_id)
+            
+            return {
+                "status": "success",
+                "transaction_id": transaction_id,
+                "records_sent": record_count,
+                "batch_count": batch_count,
+                "parallel_workers": max_workers,
+                "primary_key": primary_key,
+                "commit_status": commit_result,
+                "export_result": export_result,
+                "message": "Data written in parallel and committed"
+            }
+        
+        finally:
+            session.close()
+    
     def _get_transaction_id(self, session: requests.Session, csrf_token: str) -> str:
         """Get transaction ID from SAP system"""
         url = f"{self.api_url}/getTransactionID"
-        
+
         try:
-            logger.debug("Requesting transaction ID from SAP")
-            response = session.get(
+            logger.debug(f"Requesting transaction ID from SAP with URL: {url}")
+            response = session.post(
                 url,
-                headers={"X-CSRF-Token": csrf_token},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-CSRF-Token": csrf_token
+                },
                 timeout=self.timeout
             )
+            logger.debug(f"Response status code: {response.status_code}")
+            logger.debug(f"Response content: {response.text}")
             response.raise_for_status()
-            
+
             # Parse response to extract transaction ID
             data = response.json()
             transaction_id = data.get('d', {}).get('TransactionID')
-            
+
             if not transaction_id:
                 raise Exception("Transaction ID not found in response")
-            
+
             logger.info(f"Transaction ID obtained: {transaction_id}")
             return transaction_id
-            
+
         except Exception as e:
             logger.error(f"Failed to get transaction ID: {str(e)}")
             raise
@@ -446,105 +553,6 @@ class SAPWriteService:
         finally:
             session.close()
     
-    def write_segments_parallel(
-        self,
-        segment_data: pd.DataFrame,
-        version_id: Optional[str] = None,
-        scenario_id: Optional[str] = None,
-        period_field: str = "PERIODID3_TSTAMP",
-        batch_size: int = 5000,
-        max_workers: int = 4
-    ) -> Dict[str, Any]:
-        """
-        Write XYZ segments using parallel processing for high volumes
-        
-        Args:
-            segment_data: DataFrame with PRDID and XYZ_Segment columns
-            version_id: Target version
-            scenario_id: Target scenario
-            period_field: Period timestamp field name
-            batch_size: Number of records per batch
-            max_workers: Maximum parallel threads
-            
-        Returns:
-            Response with transaction ID and status
-        """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
-        record_count = len(segment_data)
-        logger.info(f"Starting parallel write for {record_count} segments")
-        
-        # Get CSRF token and session
-        session, csrf_token = self._get_csrf_token()
-        
-        try:
-            # Initiate parallel process
-            transaction_id = self._initiate_parallel_process(
-                session=session,
-                csrf_token=csrf_token,
-                version_id=version_id,
-                scenario_id=scenario_id
-            )
-            
-            # Split data into batches
-            batches = [segment_data[i:i+batch_size] for i in range(0, record_count, batch_size)]
-            batch_count = len(batches)
-            logger.info(f"Split into {batch_count} batches for parallel processing")
-            
-            url = f"{self.api_url}/{self.planning_area}Trans"
-            
-            # Send batches in parallel
-            results = []
-            failed_batches = []
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_batch = {
-                    executor.submit(
-                        self._send_batch_parallel,
-                        url,
-                        batch,
-                        transaction_id,
-                        csrf_token,
-                        period_field,
-                        idx
-                    ): idx for idx, batch in enumerate(batches, 1)
-                }
-                
-                for future in as_completed(future_to_batch):
-                    batch_idx = future_to_batch[future]
-                    try:
-                        result = future.result()
-                        results.append(result)
-                        logger.info(f"Batch {batch_idx} completed successfully")
-                    except Exception as e:
-                        logger.error(f"Batch {batch_idx} failed: {str(e)}")
-                        failed_batches.append(batch_idx)
-            
-            if failed_batches:
-                logger.error(f"Failed batches: {failed_batches}")
-                raise Exception(f"Some batches failed: {failed_batches}")
-            
-            # Commit transaction
-            logger.info("All batches sent, committing transaction")
-            commit_result = self._commit_transaction(session, csrf_token, transaction_id)
-            
-            # Get export result
-            export_result = self._get_export_result(session, csrf_token, transaction_id)
-            
-            return {
-                "status": "success",
-                "transaction_id": transaction_id,
-                "records_sent": record_count,
-                "batch_count": batch_count,
-                "parallel_workers": max_workers,
-                "commit_status": commit_result,
-                "export_result": export_result,
-                "message": "Data written in parallel and committed"
-            }
-        
-        finally:
-            session.close()
-    
     def _initiate_parallel_process(
         self,
         session: requests.Session,
@@ -597,6 +605,7 @@ class SAPWriteService:
         batch: pd.DataFrame,
         transaction_id: str,
         csrf_token: str,
+        primary_key: str,
         period_field: str,
         batch_idx: int
     ) -> Dict[str, Any]:
@@ -609,6 +618,7 @@ class SAPWriteService:
             payload = self._prepare_payload(
                 segment_data=batch,
                 transaction_id=transaction_id,
+                primary_key=primary_key,
                 period_field=period_field,
                 do_commit=False
             )
