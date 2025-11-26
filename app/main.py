@@ -1,7 +1,7 @@
 """
 app/main.py
 
-Updated FastAPI application with write-back functionality
+Updated FastAPI application with dynamic segmentation functionality
 """
 
 from fastapi import FastAPI
@@ -11,7 +11,7 @@ from datetime import datetime
 
 from app.config import get_settings
 from app.utils.logger import setup_logger, get_logger
-from app.api.routes import health, xyz_analysis, xyz_write
+from app.api.routes import health, xyz_analysis, xyz_write, dynamic_segmentation
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -33,6 +33,7 @@ app = FastAPI(
     ## Features
     - Fetch product data from SAP IBP
     - Perform XYZ segmentation analysis
+    - **NEW: Dynamic segmentation with user-defined attributes**
     - Export analysis results (CSV, JSON, Excel)
     - Write XYZ segments back to SAP IBP
     
@@ -40,6 +41,18 @@ app = FastAPI(
     - **X Segment**: Stable demand (CV ≤ 10%)
     - **Y Segment**: Moderate variability (10% < CV ≤ 25%)
     - **Z Segment**: High variability (CV > 25%)
+    
+    ## Dynamic Segmentation Workflow
+    1. **GET /api/v1/dynamic-segmentation/attributes** - Discover available attributes
+    2. **POST /api/v1/dynamic-segmentation/preview** - Preview your configuration
+    3. **POST /api/v1/dynamic-segmentation/analyze** - Run full analysis
+    4. **POST /api/v1/dynamic-segmentation/analyze/export** - Export results
+    
+    ## Segmentation Levels Supported
+    - Product Level: `["PRDID"]`
+    - Product-Location: `["PRDID", "LOCID"]`
+    - Product-Customer: `["PRDID", "CUSTID"]`
+    - Multi-dimensional: `["PRDID", "LOCID", "CUSTID"]`
     """,
     docs_url="/docs",
     redoc_url="/redoc"
@@ -58,6 +71,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(xyz_analysis.router)
 app.include_router(xyz_write.router)
+app.include_router(dynamic_segmentation.router)  # NEW
 
 
 @app.on_event("startup")
@@ -66,6 +80,7 @@ async def startup_event():
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Debug mode: {settings.DEBUG}")
     logger.info(f"Write operations enabled: {settings.ENABLE_WRITE_OPERATIONS}")
+    logger.info("NEW: Dynamic segmentation API enabled")
     
     if settings.ENABLE_WRITE_OPERATIONS:
         logger.info(f"Write API URL: {settings.SAP_WRITE_API_URL}")

@@ -1,7 +1,7 @@
 import requests
 import xml.etree.ElementTree as ET
 import pandas as pd
-from typing import Optional
+from typing import Optional, List
 from app.config import get_settings
 from app.utils.logger import get_logger
 
@@ -10,6 +10,18 @@ logger = get_logger(__name__)
 
 class SAPService:
     """Service for interacting with SAP IBP OData API"""
+    
+    # List of common SAP IBP attributes that can be used for segmentation
+    AVAILABLE_ATTRIBUTES = [
+        'PRDID',        # Product ID (required)
+        'LOCID',        # Location ID
+        'CUSTID',       # Customer ID
+        'PRDGRPID',     # Product Group ID
+        'REGIONID',     # Region ID
+        'SALESORGID',   # Sales Organization ID
+        'CHANID',       # Channel ID
+        'DIVID',        # Division ID
+    ]
     
     def __init__(self):
         self.settings = get_settings()
@@ -23,23 +35,42 @@ class SAPService:
             'd': 'http://schemas.microsoft.com/ado/2007/08/dataservices',
         }
     
-    def fetch_data(self, additional_filters: Optional[str] = None) -> pd.DataFrame:
+    def fetch_data(
+        self, 
+        additional_filters: Optional[str] = None,
+        additional_attributes: Optional[List[str]] = None
+    ) -> pd.DataFrame:
         """
         Fetch product data from SAP IBP OData API
         
         Args:
             additional_filters: Optional OData filter string
+            additional_attributes: List of additional attributes to fetch (e.g., ['LOCID', 'CUSTID'])
             
         Returns:
             DataFrame with product data
         """
         logger.info("Fetching data from SAP IBP API")
         
-        # Build query
+        # Base select fields (always needed)
+        select_fields = ['PRDID', 'ACTUALSQTY', 'PERIODID3_TSTAMP']
+        
+        # Add additional attributes if requested
+        if additional_attributes:
+            for attr in additional_attributes:
+                if attr not in select_fields and attr in self.AVAILABLE_ATTRIBUTES:
+                    select_fields.append(attr)
+                    logger.info(f"Adding attribute: {attr}")
+        
+        # Build $select clause
+        select_clause = ','.join(select_fields)
+        
+        # Build filter
         base_filter = "UOMTOID eq 'EA' and ACTUALSQTY gt 0"
         query_filter = f"{base_filter} and {additional_filters}" if additional_filters else base_filter
         
-        url = f"{self.api_url}?$select=PRDID,ACTUALSQTY,PERIODID3_TSTAMP&$filter={query_filter}"
+        # Build complete URL
+        url = f"{self.api_url}?$select={select_clause}&$filter={query_filter}"
         
         try:
             logger.debug(f"Making request to: {url}")
@@ -60,15 +91,15 @@ class SAPService:
         
         # Parse XML
         try:
-            df = self._parse_xml_response(response.content)
-            logger.info(f"Successfully parsed {len(df)} records")
+            df = self._parse_xml_response(response.content, select_fields)
+            logger.info(f"Successfully parsed {len(df)} records with columns: {list(df.columns)}")
             return df
             
         except ET.ParseError as e:
             logger.error(f"XML parsing failed: {str(e)}")
             raise Exception(f"Failed to parse XML response: {str(e)}")
     
-    def _parse_xml_response(self, xml_content: bytes) -> pd.DataFrame:
+    def _parse_xml_response(self, xml_content: bytes, expected_fields: List[str]) -> pd.DataFrame:
         """Parse XML response and convert to DataFrame"""
         root = ET.fromstring(xml_content)
         extracted_data = []
@@ -77,24 +108,28 @@ class SAPService:
             properties = entry.find('.//m:properties', self.namespaces)
             
             if properties is not None:
-                prdid = properties.find('d:PRDID', self.namespaces)
-                period = properties.find('d:PERIODID3_TSTAMP', self.namespaces)
-                qty = properties.find('d:ACTUALSQTY', self.namespaces)
+                record = {}
                 
-                extracted_data.append({
-                    'PRDID': prdid.text if prdid is not None else None,
-                    'KF_DATE': period.text if period is not None else None,
-                    'ACTUALSQTY': qty.text if qty is not None else None,
-                })
+                # Extract all requested fields
+                for field in expected_fields:
+                    element = properties.find(f'd:{field}', self.namespaces)
+                    record[field] = element.text if element is not None else None
+                
+                extracted_data.append(record)
         
         if not extracted_data:
             logger.warning("No data found in API response")
             raise Exception("No data found")
         
         df = pd.DataFrame(extracted_data)
-        df['ACTUALSQTY'] = pd.to_numeric(df['ACTUALSQTY'], errors='coerce')
         
-        # Remove rows with invalid quantities
+        # Convert ACTUALSQTY to numeric
+        df['ACTUALSQTY'] = pd.to_numeric(df['ACTUALSQTY'], errors='coerce')
         df = df.dropna(subset=['ACTUALSQTY'])
         
         return df
+    
+    @classmethod
+    def get_available_attributes(cls) -> List[str]:
+        """Get list of available attributes for segmentation"""
+        return cls.AVAILABLE_ATTRIBUTES
