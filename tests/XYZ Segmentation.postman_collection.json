@@ -1,0 +1,237 @@
+{
+	"info": {
+		"_postman_id": "7134f371-d43c-442c-af80-a7f498a675d7",
+		"name": "XYZ Segmentation",
+		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
+		"_exporter_id": "44813640"
+	},
+	"item": [
+		{
+			"name": "New Request",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": "http://localhost:8000/api/v1/dynamic-segmentation/available-attributes"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"primary_key\": \"PRDID\",\r\n  \"groupby_attributes\": [\"PRDID\"],\r\n  \"x_threshold\": 10.0,\r\n  \"y_threshold\": 25.0,\r\n  \"min_periods\": 6\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:8000/api/v1/dynamic-segmentation/preview"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"primary_key\": \"PRDID\",\r\n  \"groupby_attributes\": [\"PRDID\", \"LOCID\"],\r\n  \"x_threshold\": 10.0,\r\n  \"y_threshold\": 25.0,\r\n  \"min_periods\": 12,\r\n  \"filters\": \"LOCID eq '1720'\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:8000/api/v1/dynamic-segmentation/preview"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"primary_key\": \"LOCID\",\r\n  \"groupby_attributes\": [\"LOCID\"],\r\n  \"x_threshold\": 15.0,\r\n  \"y_threshold\": 30.0,\r\n  \"min_periods\": 6\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:8000/api/v1/dynamic-segmentation/preview"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"primary_key\": \"PRDID\",\r\n  \"groupby_attributes\": [\"PRDID\"],\r\n  \"x_threshold\": 10.0,\r\n  \"y_threshold\": 25.0,\r\n  \"min_periods\": 6,\r\n  \"aggregation_method\": \"mean_std\",\r\n  \"remove_outliers\": false\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:8000/api/v1/dynamic-segmentation/analyze"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"primary_key\": \"LOCID\",\r\n  \"groupby_attributes\": [\"LOCID\"],\r\n  \"x_threshold\": 10.0,\r\n  \"y_threshold\": 25.0,\r\n  \"min_periods\": 12,\r\n  \"aggregation_method\": \"mean_std\",\r\n  \"remove_outliers\": true,\r\n  \"outlier_threshold\": 3.0,\r\n  \"filters\": \"LOCID eq '1720' or LOCID eq '1730'\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:8000/api/v1/dynamic-segmentation/analyze"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"primary_key\": \"CUSTID\",\r\n  \"groupby_attributes\": [\"CUSTID\", \"PRDID\"],\r\n  \"x_threshold\": 15.0,\r\n  \"y_threshold\": 30.0,\r\n  \"min_periods\": 6\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:8000/api/v1/dynamic-segmentation/analyze"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"primary_key\": \"PRDID\",\r\n  \"groupby_attributes\": [\"PRDID\", \"LOCID\"],\r\n  \"x_threshold\": 10.0,\r\n  \"y_threshold\": 25.0,\r\n  \"min_periods\": 12\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://localhost:8000/api/v1/dynamic-segmentation/analyze/export?format=csv",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"api",
+						"v1",
+						"dynamic-segmentation",
+						"analyze",
+						"export"
+					],
+					"query": [
+						{
+							"key": "format",
+							"value": "csv"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": "http://localhost:8000/api/v1/xyz-write/validate-config"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"primary_key\": \"PRDID\",\r\n  \"groupby_attributes\": [\"PRDID\"],\r\n  \"x_threshold\": 10.0,\r\n  \"y_threshold\": 25.0,\r\n  \"write_mode\": \"simple\",\r\n  \"version_id\": \"CONSENSUS\",\r\n  \"period_field\": \"PERIODID3_TSTAMP\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:8000/api/v1/xyz-write/debug-payload"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n  \"primary_key\": \"PRDID\",\r\n  \"groupby_attributes\": [\"PRDID\"],\r\n  \"x_threshold\": 10.0,\r\n  \"y_threshold\": 25.0,\r\n  \"write_mode\": \"simple\",\r\n  \"period_field\": \"PERIODID3_TSTAMP\"\r\n}\r\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:8000/api/v1/xyz-write/write-segments"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{ \"primary_key\": \"PRDID\",\r\n  \"groupby_attributes\": [\"PRDID\", \"LOCID\"],\r\n  \"x_threshold\": 10.0,\r\n  \"y_threshold\": 25.0,\r\n  \"write_mode\": \"simple\",\r\n  \"batch_size\": 5000,\r\n  \"filters\": \"LOCID eq '1720'\",\r\n  \"period_field\": \"PERIODID3_TSTAMP\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:8000/api/v1/xyz-write/write-segments"
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": "http://localhost:8000/api/v1/xyz-write/status/006A8441E39A4DB6ABD1F6A1E3B66703"
+			},
+			"response": []
+		}
+	]
+}

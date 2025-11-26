@@ -1,7 +1,9 @@
 """
-app/main.py
+app/main.py - CLEANED VERSION
 
-Updated FastAPI application with dynamic segmentation functionality
+Removed:
+- xyz_analysis router (redundant)
+- Reference to old analysis service
 """
 
 from fastapi import FastAPI
@@ -11,7 +13,7 @@ from datetime import datetime
 
 from app.config import get_settings
 from app.utils.logger import setup_logger, get_logger
-from app.api.routes import health, xyz_analysis, xyz_write, dynamic_segmentation
+from app.api.routes import health, xyz_write, dynamic_segmentation  # REMOVED xyz_analysis
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -28,31 +30,53 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="""
-    API for fetching SAP IBP data and performing XYZ segmentation analysis.
+    API for SAP IBP XYZ Segmentation Analysis with Write-Back
     
     ## Features
-    - Fetch product data from SAP IBP
-    - Perform XYZ segmentation analysis
-    - **NEW: Dynamic segmentation with user-defined attributes**
-    - Export analysis results (CSV, JSON, Excel)
-    - Write XYZ segments back to SAP IBP
+    - **Dynamic Segmentation**: Analyze by Product, Location, Customer, or any combination
+    - **Flexible Primary Keys**: Segment by PRDID, LOCID, CUSTID, etc.
+    - **Write-Back**: Automatically write segments to SAP IBP
+    - **Multi-dimensional**: Support for Product-Location, Location-Customer, and more
     
-    ## XYZ Segmentation
-    - **X Segment**: Stable demand (CV ≤ 10%)
-    - **Y Segment**: Moderate variability (10% < CV ≤ 25%)
-    - **Z Segment**: High variability (CV > 25%)
+    ## Quick Start
     
-    ## Dynamic Segmentation Workflow
-    1. **GET /api/v1/dynamic-segmentation/attributes** - Discover available attributes
-    2. **POST /api/v1/dynamic-segmentation/preview** - Preview your configuration
-    3. **POST /api/v1/dynamic-segmentation/analyze** - Run full analysis
-    4. **POST /api/v1/dynamic-segmentation/analyze/export** - Export results
+    ### 1. Discover Available Dimensions
+    ```
+    GET /api/v1/dynamic-segmentation/available-attributes
+    ```
     
-    ## Segmentation Levels Supported
-    - Product Level: `["PRDID"]`
-    - Product-Location: `["PRDID", "LOCID"]`
-    - Product-Customer: `["PRDID", "CUSTID"]`
-    - Multi-dimensional: `["PRDID", "LOCID", "CUSTID"]`
+    ### 2. Run Analysis
+    ```json
+    POST /api/v1/dynamic-segmentation/analyze
+    {
+      "primary_key": "PRDID",
+      "groupby_attributes": ["PRDID", "LOCID"],
+      "x_threshold": 10.0,
+      "y_threshold": 25.0
+    }
+    ```
+    
+    ### 3. Write to SAP IBP
+    ```json
+    POST /api/v1/xyz-write/write-segments
+    {
+      "groupby_attributes": ["PRDID", "LOCID"],
+      "x_threshold": 10.0,
+      "y_threshold": 25.0,
+      "write_mode": "batched",
+      "version_id": "CONSENSUS"
+    }
+    ```
+    
+    ## Segmentation Examples
+    
+    | Use Case | Primary Key | Groupby Attributes |
+    |----------|-------------|-------------------|
+    | Product-only | PRDID | ["PRDID"] |
+    | Location-only | LOCID | ["LOCID"] |
+    | Product-Location | PRDID | ["PRDID", "LOCID"] |
+    | Location-Customer | LOCID | ["LOCID", "CUSTID"] |
+    | Customer-Product | CUSTID | ["CUSTID", "PRDID"] |
     """,
     docs_url="/docs",
     redoc_url="/redoc"
@@ -67,11 +91,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# Include routers - CLEANED UP
 app.include_router(health.router)
-app.include_router(xyz_analysis.router)
+app.include_router(dynamic_segmentation.router)
 app.include_router(xyz_write.router)
-app.include_router(dynamic_segmentation.router)  # NEW
 
 
 @app.on_event("startup")
@@ -80,7 +103,7 @@ async def startup_event():
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Debug mode: {settings.DEBUG}")
     logger.info(f"Write operations enabled: {settings.ENABLE_WRITE_OPERATIONS}")
-    logger.info("NEW: Dynamic segmentation API enabled")
+    logger.info("Dynamic segmentation with flexible primary keys enabled")
     
     if settings.ENABLE_WRITE_OPERATIONS:
         logger.info(f"Write API URL: {settings.SAP_WRITE_API_URL}")

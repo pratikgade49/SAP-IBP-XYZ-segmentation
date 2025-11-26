@@ -1,13 +1,17 @@
 """
-app/api/dependencies.py
+app/api/dependencies.py - CLEANED VERSION
 
-Dependency injection for services including write service
+Removed:
+- get_analysis_service (old simple service)
+
+Kept:
+- get_sap_service (data fetching)
+- get_sap_write_service (write-back)
 """
 
 from fastapi import HTTPException
 from app.services.sap_service import SAPService
 from app.services.sap_write_service import SAPWriteService
-from app.services.analysis_service import AnalysisService
 from app.config import get_settings
 
 
@@ -16,13 +20,8 @@ def get_sap_service() -> SAPService:
     return SAPService()
 
 
-def get_analysis_service() -> AnalysisService:
-    """Dependency for analysis service"""
-    return AnalysisService()
-
-
 def get_sap_write_service() -> SAPWriteService:
-    """Dependency for SAP write service"""
+    """Dependency for SAP write service with validation"""
     settings = get_settings()
     
     # Check if write operations are enabled

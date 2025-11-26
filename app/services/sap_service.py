@@ -65,6 +65,8 @@ class SAPService:
         """
         Fetch data from SAP IBP OData API with flexible primary key
         
+        FIXED: Properly handles OR conditions in filters with parentheses
+        
         Args:
             primary_key: Primary key for segmentation (PRDID, LOCID, CUSTID, etc.)
             additional_filters: Optional OData filter string
@@ -95,9 +97,20 @@ class SAPService:
         # Build $select clause
         select_clause = ','.join(select_fields)
         
-        # Build filter
+        # Build filter with proper parentheses
         base_filter = "UOMTOID eq 'EA' and ACTUALSQTY gt 0"
-        query_filter = f"{base_filter} and {additional_filters}" if additional_filters else base_filter
+        
+        if additional_filters:
+            # FIXED: Wrap additional_filters in parentheses if it contains 'or'
+            if ' or ' in additional_filters.lower():
+                # Wrap the additional filters in parentheses
+                query_filter = f"{base_filter} and ({additional_filters})"
+                logger.info(f"Applied filter with OR logic: {query_filter}")
+            else:
+                # Simple AND conditions don't need extra parentheses
+                query_filter = f"{base_filter} and {additional_filters}"
+        else:
+            query_filter = base_filter
         
         # Build complete URL
         url = f"{self.api_url}?$select={select_clause}&$filter={query_filter}"

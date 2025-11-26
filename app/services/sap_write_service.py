@@ -9,6 +9,7 @@ import pandas as pd
 from typing import Optional, Dict, List, Any
 from datetime import datetime
 import uuid
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.config import get_settings
 from app.utils.logger import get_logger
@@ -80,73 +81,77 @@ class SAPWriteService:
         """
         Prepare POST payload for SAP IBP with flexible primary key
         
-        Args:
-            segment_data: DataFrame with primary_key, XYZ_Segment columns
-            transaction_id: Unique transaction identifier
-            primary_key: Primary key field (PRDID, LOCID, CUSTID, etc.)
-            version_id: Target version
-            scenario_id: Target scenario
-            period_field: Period field name
-            do_commit: If True, auto-commit in single request
-            
-        Returns:
-            Dictionary payload for POST request
+        FIXED: Added validation and proper timestamp formatting
         """
         logger.debug(f"Preparing payload for {len(segment_data)} records with primary_key={primary_key}")
         
         # Validate that primary_key exists in data
         if primary_key not in segment_data.columns:
-            raise ValueError(f"Primary key {primary_key} not found in segment_data")
+            raise ValueError(f"Primary key {primary_key} not found in segment_data. Available: {list(segment_data.columns)}")
         
-        # Build aggregation level fields string
-        # Start with primary key, then add XYZ key figure
-        agg_fields_list = [primary_key, self.xyz_key_figure]
+        # Identify all dimension columns (everything except XYZ_Segment and period)
+        dimension_cols = [col for col in segment_data.columns 
+                         if col not in ['XYZ_Segment', period_field, 'mean', 'std', 'CV', 'count']]
         
-        # Add NULL handling if enabled
+        logger.info(f"Dimension columns identified: {dimension_cols}")
+        
+        # Build AggregationLevelFieldsString per SAP format
+        # Order: Dimensions -> Key Figure -> (NULL Flag if enabled) -> Period
+        agg_fields_list = []
+        
+        # 1. Add all dimensions (in order: primary_key first, then others)
+        agg_fields_list.append(primary_key)
+        for dim in dimension_cols:
+            if dim != primary_key:
+                agg_fields_list.append(dim)
+        
+        # 2. Add key figure
+        agg_fields_list.append(self.xyz_key_figure)
+        
+        # 3. Add NULL flag only if enabled
         if self.enable_null_handling:
             agg_fields_list.append(f"{self.xyz_key_figure}_isNull")
         
-        # Add additional dimensions if present in data
-        additional_dims = []
-        for dim in ['LOCID', 'CUSTID', 'PRDGRPID']:
-            if dim in segment_data.columns and dim != primary_key:
-                additional_dims.append(dim)
+        # 4. Add period field last
+        agg_fields_list.append(period_field)
         
-        # Build final field list: additional_dims, primary_key, xyz_field, period
-        final_fields = additional_dims + [primary_key, self.xyz_key_figure]
-        if self.enable_null_handling:
-            final_fields.append(f"{self.xyz_key_figure}_isNull")
-        final_fields.append(period_field)
-        
-        agg_fields = ','.join(final_fields)
+        agg_fields = ','.join(agg_fields_list)
+        logger.info(f"AggregationLevelFieldsString: {agg_fields}")
         
         # Build navigation property data
         nav_data = []
-        for _, row in segment_data.iterrows():
-            record = {
-                primary_key: row[primary_key],
-                self.xyz_key_figure: row['XYZ_Segment']
-            }
+        for idx, row in segment_data.iterrows():
+            record = {}
             
-            # Add NULL flag if enabled
-            if self.enable_null_handling:
-                record[f"{self.xyz_key_figure}_isNull"] = False
+            # Add fields in same order as AggregationLevelFieldsString
+            # 1. Dimensions (primary_key first, then others)
+            if primary_key in row.index and pd.notna(row[primary_key]):
+                record[primary_key] = str(row[primary_key])
             
-            # Add additional dimensions
-            for dim in additional_dims:
-                if pd.notna(row[dim]):
-                    record[dim] = row[dim]
+            for dim in dimension_cols:
+                if dim != primary_key and dim in row.index and pd.notna(row[dim]):
+                    record[dim] = str(row[dim])
             
-            # Add period timestamp
-            if period_field in row and pd.notna(row[period_field]):
-                record[period_field] = row[period_field]
+            # 2. Key figure (XYZ segment value)
+            record[self.xyz_key_figure] = str(row['XYZ_Segment'])
+            
+            # 3. NULL flag (always required per SAP OData API)
+            record[f"{self.xyz_key_figure}_isNull"] = False
+            
+            # 4. Period field
+            if period_field in row.index and pd.notna(row[period_field]):
+                timestamp_str = str(row[period_field])
+                if 'T' not in timestamp_str:
+                    timestamp_str = f"{timestamp_str}T00:00:00"
+                record[period_field] = timestamp_str
             else:
                 record[period_field] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
             
             nav_data.append(record)
         
-        # Navigation property name
+        # Navigation property name format: Nav{PlanningArea}
         nav_property_name = f"Nav{self.planning_area}"
+        logger.info(f"Navigation property name: {nav_property_name}")
         
         # Build main payload
         payload = {
@@ -164,7 +169,14 @@ class SAPWriteService:
         if do_commit:
             payload["DoCommit"] = True
         
-        logger.debug(f"Payload prepared with primary_key={primary_key}, {len(nav_data)} records")
+        logger.debug(f"Payload prepared: {len(nav_data)} records")
+        logger.debug(f"Sample record: {nav_data[0] if nav_data else 'None'}")
+        
+        # ADDED: Log first 2 complete records for debugging
+        logger.info(f"First record details: {json.dumps(nav_data[0], indent=2) if nav_data else 'None'}")
+        if len(nav_data) > 1:
+            logger.info(f"Second record details: {json.dumps(nav_data[1], indent=2)}")
+        
         return payload
     
     def write_segments_simple(
@@ -178,12 +190,7 @@ class SAPWriteService:
         """
         Write XYZ segments using simple single-request method
         
-        Args:
-            segment_data: DataFrame with primary_key and XYZ_Segment columns
-            primary_key: Primary key field (PRDID, LOCID, CUSTID, etc.)
-            version_id: Target version
-            scenario_id: Target scenario
-            period_field: Period timestamp field name
+        FIXED: Added detailed logging for debugging
         """
         record_count = len(segment_data)
         logger.info(f"Starting simple write for {record_count} segments with primary_key={primary_key}")
@@ -206,6 +213,13 @@ class SAPWriteService:
             do_commit=True
         )
         
+        # ADDED: Log complete payload structure (first record only for brevity)
+        payload_sample = payload.copy()
+        nav_key = f"Nav{self.planning_area}"
+        if nav_key in payload_sample and len(payload_sample[nav_key]) > 2:
+            payload_sample[nav_key] = payload_sample[nav_key][:2]  # Only first 2 records
+        logger.info(f"Complete payload structure:\n{json.dumps(payload_sample, indent=2)}")
+        
         # Get CSRF token
         session, csrf_token = self._get_csrf_token()
         
@@ -213,16 +227,24 @@ class SAPWriteService:
         url = f"{self.api_url}/{self.planning_area}Trans"
         
         try:
-            logger.debug(f"Sending POST to: {url}")
+            logger.info(f"Sending POST to: {url}")
+            logger.info(f"Request headers: Content-Type=application/json, X-CSRF-Token={csrf_token[:10]}...")
+            
             response = session.post(
                 url,
                 json=payload,
                 headers={
                     "Content-Type": "application/json",
-                    "X-CSRF-Token": csrf_token
+                    "X-CSRF-Token": csrf_token,
+                    "Accept": "application/json"
                 },
                 timeout=self.timeout
             )
+            
+            # Log response details
+            logger.info(f"Response status: {response.status_code}")
+            logger.info(f"Response headers: {dict(response.headers)}")
+            
             response.raise_for_status()
             logger.info(f"Write successful - Transaction ID: {transaction_id}")
             
@@ -238,6 +260,17 @@ class SAPWriteService:
             logger.error(f"Write request failed: {str(e)}")
             if hasattr(e, 'response') and hasattr(e.response, 'text'):
                 logger.error(f"Response body: {e.response.text}")
+                
+                # Try to parse error details from XML
+                try:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(e.response.text)
+                    error_msg = root.find('.//{http://schemas.microsoft.com/ado/2007/08/dataservices/metadata}message')
+                    if error_msg is not None:
+                        logger.error(f"SAP Error Message: {error_msg.text}")
+                except:
+                    pass
+            
             raise Exception(f"Failed to write data to SAP: {str(e)}")
         
         finally:
